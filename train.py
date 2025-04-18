@@ -77,8 +77,12 @@ def parse_arguments():
     parser.add_argument('--hidden_size', type=int, default=128, help='Number of hidden units in LSTM')
     parser.add_argument('--num_layers', type=int, default=2, help='Number of LSTM layers')
     parser.add_argument('--dropout', type=float, default=0.2, help='Dropout rate for LSTM and FC layers')
-    
-    # TCN Hyperparameters - Added
+
+    # Model Type Selection - Added
+    parser.add_argument('--use_tcn', action='store_true', default=True, help='Use Hybrid Model (LSTM + TCN)')
+    parser.add_argument('--no_tcn', action='store_false', dest='use_tcn', help='Use only LSTM Model')
+
+    # TCN Hyperparameters - Added (Only relevant if --use_tcn)
     parser.add_argument('--tcn_num_channels', type=int, nargs="+", default=[64, 64], help="Number of channels in each TCN layer (list)")
     parser.add_argument('--tcn_kernel_size', type=int, default=3, help="Kernel size for TCN convolutions")
     parser.add_argument('--tcn_dropout', type=float, default=0.2, help="Dropout rate for TCN layers")
@@ -161,22 +165,31 @@ def load_and_prepare_data(args):
     return train_loader, val_loader, test_loader, feat_scaler, targ_scaler, all_feature_cols
 
 def build_model(args, input_size, device):
-    print(f"Initializing Hybrid Model (LSTM + TCN) for {input_size} features...")
-    lstm_model_instance = LSTMModel(
-        input_size=input_size,
-        hidden_size=args.hidden_size,
-        num_layers=args.num_layers,
-        dropout=args.dropout
-    )
-    tcn_model_instance = TCNModel(
-        input_size=input_size,
-        output_size=1, # Ensure TCN also outputs a single value
-        num_channels=args.tcn_num_channels,
-        kernel_size=args.tcn_kernel_size,
-        dropout=args.tcn_dropout
-    )
-    
-    model = HybridModel(lstm_model=lstm_model_instance, tcn_model=tcn_model_instance)
+    if args.use_tcn:
+        print(f"Initializing Hybrid Model (LSTM + TCN) for {input_size} features...")
+        lstm_model_instance = LSTMModel(
+            input_size=input_size,
+            hidden_size=args.hidden_size,
+            num_layers=args.num_layers,
+            dropout=args.dropout
+        )
+        tcn_model_instance = TCNModel(
+            input_size=input_size,
+            output_size=1, # Ensure TCN also outputs a single value
+            num_channels=args.tcn_num_channels,
+            kernel_size=args.tcn_kernel_size,
+            dropout=args.tcn_dropout
+        )
+        model = HybridModel(lstm_model=lstm_model_instance, tcn_model=tcn_model_instance)
+    else:
+        print(f"Initializing LSTM-only Model for {input_size} features...")
+        model = LSTMModel(
+            input_size=input_size,
+            hidden_size=args.hidden_size,
+            num_layers=args.num_layers,
+            dropout=args.dropout
+        )
+
     model.to(device)
     print("Model initialized and moved to device:", device)
     return model
@@ -331,17 +344,21 @@ def log_artifacts(args, best_model_path, feat_scaler, targ_scaler, results_df, m
     print("Logged test evaluation CSV to MLflow artifacts path 'evaluation'")
 
     # --- Hybrid Weights (if applicable) ---
-    try:
-        final_alpha = model.alpha.item()
-        final_weight = torch.sigmoid(model.alpha).item()
-        print(f"Logging final learned weight parameter (alpha): {final_alpha:.4f}")
-        print(f"  Final LSTM weight (sigmoid(alpha)): {final_weight:.4f}")
-        print(f"  Final TCN weight (1 - sigmoid(alpha)): {1 - final_weight:.4f}")
-        mlflow.log_metric("final_hybrid_alpha", final_alpha)
-        mlflow.log_metric("final_hybrid_lstm_weight", final_weight)
-    except AttributeError:
-        print("Note: Model does not have 'alpha' parameter for hybrid weights. Skipping weight logging.")
-    
+    if args.use_tcn: # Only attempt if hybrid model was used
+        try:
+            final_alpha = model.alpha.item()
+            final_weight = torch.sigmoid(model.alpha).item()
+            print(f"Logging final learned weight parameter (alpha): {final_alpha:.4f}")
+            print(f"  Final LSTM weight (sigmoid(alpha)): {final_weight:.4f}")
+            print(f"  Final TCN weight (1 - sigmoid(alpha)): {1 - final_weight:.4f}")
+            mlflow.log_metric("final_hybrid_alpha", final_alpha)
+            mlflow.log_metric("final_hybrid_lstm_weight", final_weight)
+        except AttributeError:
+            # This might happen if the HybridModel structure changes or if somehow use_tcn is true
+            # but the model doesn't have alpha (shouldn't happen with current build_model logic)
+            print("Warning: Model does not have 'alpha' parameter despite use_tcn=True. Skipping weight logging.")
+    else:
+        print("Note: TCN was not used (--no_tcn specified). Skipping hybrid weight logging.")
 
 # --- Refactored Training and Evaluation Logic ---
 def run_training_trial(args, device, trial_num=None, random_seed=None):

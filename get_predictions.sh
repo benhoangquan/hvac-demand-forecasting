@@ -22,7 +22,7 @@ python predict_hvac.py \
     --model_filename best_model/lstm_hvac_best_seed_42_seed_123_seed_456_seed_789_seed_1011.pth \
     --feature_scaler_filename scalers/feature_scaler_seed_42_seed_123_seed_456_seed_789_seed_1011.save \
     --target_scaler_filename scalers/target_scaler_seed_42_seed_123_seed_456_seed_789_seed_1011.save \
-    --training_run_id dfdc12bdac164645b4b2b5f3b49c8c9e\
+    --training_run_id 5641180a72304d768e1293cee49912e5\
     --test_csv dataset/test_features.csv \
     --results_dir results \
-    --output_filename quan_submission_dfdc12bdac164645b4b2b5f3b49c8c9e.csv
+    --output_filename quan_submission_5641180a72304d768e1293cee49912e5.csv
