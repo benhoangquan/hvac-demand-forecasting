@@ -12,6 +12,7 @@ import pandas as pd
 import numpy as np
 import torch
 import joblib
+import xgboost as xgb
 
 from hvac_lstm_prototype import LSTMModel
 
@@ -25,6 +26,7 @@ def main():
     parser.add_argument('--target_scaler_filename', default='target_scaler.save', help='Filename of the saved target scaler')
     parser.add_argument('--output_filename', default='submission.csv', help='Filename for the Kaggle submission CSV')
     parser.add_argument('--seq_len', type=int, default=16, help='Sequence length used during training')
+    parser.add_argument('--xgb_model_filename', default='xgb_hvac_best.json', help='Filename of the saved XGBoost model')
 
     args = parser.parse_args()
 
@@ -33,6 +35,7 @@ def main():
     feature_scaler_path = os.path.join(args.model_dir, args.feature_scaler_filename)
     target_scaler_path = os.path.join(args.model_dir, args.target_scaler_filename)
     output_path = os.path.join(args.results_dir, args.output_filename)
+    xgb_model_path = os.path.join(args.model_dir, args.xgb_model_filename)
 
     # Load test features
     print(f"Loading test features from {args.test_csv}...")
@@ -116,44 +119,72 @@ def main():
         if fc_weight is None: raise KeyError('Missing fc.weight')
         output_size = fc_weight.shape[0]
         if output_size != 1:
-            print(f"Warning: Loaded model expects output size {output_size}, but should be 1 for this task.")
+            print(f"Warning: Loaded LSTM model expects output size {output_size}, but should be 1.")
 
     except Exception as e:
-        raise ValueError(f"Could not determine model parameters from state dict: {e}")
+        raise ValueError(f"Could not determine LSTM parameters from state dict: {e}")
 
-    # Initialize model and load state
-    print(f"Initializing model (input={input_size}, hidden={hidden_size}, layers={num_layers}, output=1)...")
-    # Ensure model is initialized with output_size=1 regardless of loaded state check
-    model = LSTMModel(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
-    model.load_state_dict(state)
-    model.to(device)
-    model.eval()
+    # Check if LSTM input size matches scaled feature size
+    if input_size != features_scaled.shape[1]:
+        raise ValueError(f"LSTM input size mismatch: Model expects {input_size} features, but data has {features_scaled.shape[1]} after scaling.")
 
-    # Run predictions
-    print("Running predictions...")
-    preds_scaled_list = []
+    # Initialize LSTM model and load state
+    print(f"Initializing LSTM model (input={input_size}, hidden={hidden_size}, layers={num_layers}, output=1)...")
+    lstm_model = LSTMModel(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
+    lstm_model.load_state_dict(state)
+    lstm_model.to(device)
+    lstm_model.eval()
+
+    # Load XGBoost model
+    print(f"Loading XGBoost model from {xgb_model_path}...")
+    if not os.path.isfile(xgb_model_path):
+        raise FileNotFoundError(f'XGBoost model not found at {xgb_model_path}. Run train.py first.')
+    xgb_model = xgb.XGBRegressor()
+    xgb_model.load_model(xgb_model_path)
+    
+    # Verify XGBoost feature count matches expected input
+    # Expected features: last_step_features + lstm_prediction (1)
+    expected_xgb_features = features_scaled.shape[1] + 1
+    # Note: xgb_model.n_features_in_ is available after fitting or loading
+    if hasattr(xgb_model, 'n_features_in_') and xgb_model.n_features_in_ != expected_xgb_features:
+         raise ValueError(
+             f"XGBoost feature mismatch: Model expects {xgb_model.n_features_in_} features, "
+             f"but generated data has {expected_xgb_features} (original features + LSTM prediction)."
+         )
+    else:
+        print(f"XGBoost model expects {expected_xgb_features} features.")
+
+    # --- Run Prediction Pipeline ---
+    print("Running hybrid prediction pipeline (LSTM -> XGBoost)...")
+    
+    # 1. Get LSTM Predictions (Scaled)
     with torch.no_grad():
-        # Process in batches if needed (simple approach for now)
         X_tensor = torch.from_numpy(X_test_seq).float().to(device)
-        batch_preds_scaled = model(X_tensor).cpu().numpy() # Shape: (num_samples, 1)
-        preds_scaled_list.append(batch_preds_scaled)
+        lstm_preds_scaled = lstm_model(X_tensor).cpu().numpy() # Shape: (num_samples, 1)
 
-    preds_scaled = np.concatenate(preds_scaled_list) # Shape: (num_samples, 1)
+    # 2. Prepare XGBoost Input
+    # Combine the original scaled features (last time step) with the LSTM's scaled prediction
+    # features_scaled shape: (num_samples, num_original_features)
+    # lstm_preds_scaled shape: (num_samples, 1)
+    xgb_input_features = np.concatenate((features_scaled, lstm_preds_scaled), axis=1)
+    print(f"XGBoost input shape: {xgb_input_features.shape}")
 
-    # Load target scaler and inverse transform predictions
+    # 3. Get XGBoost Predictions (Scaled)
+    final_preds_scaled = xgb_model.predict(xgb_input_features).reshape(-1, 1) # Ensure shape (num_samples, 1)
+
+    # 4. Inverse Transform Final Predictions
     print(f"Loading target scaler from {target_scaler_path}...")
     if not os.path.isfile(target_scaler_path):
         raise FileNotFoundError(f'Target scaler not found at {target_scaler_path}. Run train.py first.')
     target_scaler = joblib.load(target_scaler_path)
-    # Inverse transform expects shape (n_samples, n_features), here (n_samples, 1)
-    preds = target_scaler.inverse_transform(preds_scaled).flatten() # Shape: (num_samples,)
+    final_preds = target_scaler.inverse_transform(final_preds_scaled).flatten() # Shape: (num_samples,)
 
     # Format predictions for submission
     print("Formatting predictions for submission...")
     os.makedirs(args.results_dir, exist_ok=True)
     df_out = pd.DataFrame({
         'ID': ids,
-        'puissance_cvac_future': preds
+        'puissance_cvac_future': final_preds
     })
 
     df_out.to_csv(output_path, index=False)

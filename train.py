@@ -19,6 +19,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import joblib
 from tqdm import tqdm
+import xgboost as xgb # Add XGBoost import
 
 # Import core components from hvac_lstm_prototype
 from hvac_lstm_prototype import HVACDataset, LSTMModel, create_sequences
@@ -69,6 +70,9 @@ def main():
     parser.add_argument('--feature_scaler_filename', default='feature_scaler.save', help='Filename for saved feature scaler')
     parser.add_argument('--target_scaler_filename', default='target_scaler.save', help='Filename for saved target scaler')
     
+    # Add XGBoost model filename argument
+    parser.add_argument('--xgb_model_filename', default='xgb_hvac_best.json', help='Filename for saved XGBoost model')
+
     # Model Hyperparameters
     parser.add_argument('--seq_len', type=int, default=16, help='Sequence length for LSTM input')
     parser.add_argument('--hidden_size', type=int, default=128, help='Number of hidden units in LSTM')
@@ -99,7 +103,7 @@ def main():
     parser.add_argument('--use_gradient_clipping', action='store_true', default=True, help='Use gradient clipping during training')
     parser.add_argument('--no_gradient_clipping', action='store_false', dest='use_gradient_clipping', help='Do not use gradient clipping')
     parser.add_argument('--gradient_clip_max_norm', type=float, default=1.0, help='Max norm for gradient clipping')
-    
+
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -284,9 +288,99 @@ def main():
     mae = mean_absolute_error(trues, preds)
     print(f'Final Test MSE: {mse:.4f}, MAE: {mae:.4f}')
 
+    # --- Load Best LSTM Model ---
+    print(f"Loading best LSTM model from {best_model_path} for feature generation...")
+    if not os.path.exists(best_model_path):
+         print("Error: Best LSTM model file not found. Cannot proceed with XGBoost training.")
+         # Exit or handle appropriately
+         return # Or raise Exception("Best LSTM model not found")
+    else:
+        model.load_state_dict(torch.load(best_model_path, map_location=device))
+        
+    model.eval()
+
+    # --- Generate LSTM Predictions as Features ---
+    print("Generating LSTM predictions as features for XGBoost...")
+    
+    def get_lstm_predictions(loader, model, device):
+        preds_scaled = []
+        with torch.no_grad():
+            for Xb, _ in loader: # Don't need yb here
+                Xb = Xb.to(device, non_blocking=True)
+                out_scaled = model(Xb).cpu().numpy()
+                preds_scaled.append(out_scaled)
+        return np.concatenate(preds_scaled)
+
+    # Get scaled LSTM predictions for each set
+    lstm_preds_train_scaled = get_lstm_predictions(train_loader, model, device)
+    lstm_preds_val_scaled = get_lstm_predictions(val_loader, model, device)
+    lstm_preds_test_scaled = get_lstm_predictions(test_loader, model, device)
+
+    # --- Prepare Data for XGBoost ---
+    # Features: Last time step of original scaled features + scaled LSTM predictions
+    # Targets: Original scaled targets (y_train, y_val, y_test)
+    
+    # Extract last time step features (already scaled)
+    last_step_feat_train = X_train[:, -1, :]
+    last_step_feat_val = X_val[:, -1, :]
+    last_step_feat_test = X_test[:, -1, :]
+
+    # Combine features
+    xgb_features_train = np.concatenate((last_step_feat_train, lstm_preds_train_scaled), axis=1)
+    xgb_features_val = np.concatenate((last_step_feat_val, lstm_preds_val_scaled), axis=1)
+    xgb_features_test = np.concatenate((last_step_feat_test, lstm_preds_test_scaled), axis=1)
+
+    # Targets remain y_train, y_val, y_test (scaled)
+    xgb_target_train = y_train
+    xgb_target_val = y_val
+    xgb_target_test = y_test
+    
+    print(f"XGBoost train features shape: {xgb_features_train.shape}")
+    print(f"XGBoost validation features shape: {xgb_features_val.shape}")
+    print(f"XGBoost test features shape: {xgb_features_test.shape}")
+
+    # --- Train XGBoost Model ---
+    print("Training XGBoost model...")
+    xgb_model = xgb.XGBRegressor(
+        objective='reg:squarederror',
+        n_estimators=1000, # Adjust as needed
+        learning_rate=0.05, # Adjust as needed
+        max_depth=7, # Adjust as needed
+        subsample=0.7, # Adjust as needed
+        colsample_bytree=0.7, # Adjust as needed
+        random_state=42,
+        n_jobs=-1, # Use all available CPU cores
+        early_stopping_rounds=50 # Stop if validation performance doesn't improve
+    )
+
+    # Train with validation set for early stopping
+    xgb_model.fit(
+        xgb_features_train, xgb_target_train,
+        eval_set=[(xgb_features_val, xgb_target_val)],
+        verbose=100 # Print evaluation metrics every 100 rounds
+    )
+
+    # --- Evaluate XGBoost Model ---
+    print("Evaluating XGBoost model on the test set...")
+    xgb_preds_test_scaled = xgb_model.predict(xgb_features_test)
+    
+    # Inverse transform predictions and true values
+    xgb_preds_test = targ_scaler.inverse_transform(xgb_preds_test_scaled.reshape(-1, 1)).flatten()
+    xgb_trues_test = targ_scaler.inverse_transform(xgb_target_test.reshape(-1, 1)).flatten()
+
+    # Calculate final metrics for XGBoost model
+    xgb_mse = mean_squared_error(xgb_trues_test, xgb_preds_test)
+    xgb_mae = mean_absolute_error(xgb_trues_test, xgb_preds_test)
+    print(f'Final XGBoost Test MSE: {xgb_mse:.4f}, MAE: {xgb_mae:.4f}')
+
     # --- Saving Artifacts ---
-    # Best model already saved during training
-    print(f'Best model state dict saved to {best_model_path}')
+    # Best LSTM model already saved during training
+    print(f'Best LSTM model state dict saved to {best_model_path}')
+
+    # Save XGBoost model
+    xgb_model_path = os.path.join(args.output_dir, args.xgb_model_filename)
+    xgb_model.save_model(xgb_model_path)
+    print(f"Saved XGBoost model to {xgb_model_path}")
 
     # Save scalers (trained on full train+val data)
     feature_scaler_path = os.path.join(args.output_dir, args.feature_scaler_filename)
@@ -296,11 +390,11 @@ def main():
     print(f'Saved feature scaler to {feature_scaler_path}')
     print(f'Saved target scaler to {target_scaler_path}')
 
-    # Save test set evaluation results
-    results_df = pd.DataFrame({'y_true': trues, 'y_pred': preds})
-    eval_path = os.path.join(args.results_dir, 'test_set_eval.csv')
-    results_df.to_csv(eval_path, index=False)
-    print(f'Saved test set evaluation results to {eval_path}')
+    # Save test set evaluation results (XGBoost predictions)
+    xgb_results_df = pd.DataFrame({'y_true': xgb_trues_test, 'y_pred': xgb_preds_test})
+    xgb_eval_path = os.path.join(args.results_dir, 'xgb_test_set_eval.csv') # Use a different filename
+    xgb_results_df.to_csv(xgb_eval_path, index=False)
+    print(f'Saved XGBoost test set evaluation results to {xgb_eval_path}')
 
 if __name__ == '__main__':
     main() 

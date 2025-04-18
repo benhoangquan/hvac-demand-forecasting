@@ -4,3 +4,6 @@ scikit-learn
 torch
 tqdm
 joblib
+matplotlib
+seaborn
+xgboost
