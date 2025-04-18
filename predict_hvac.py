@@ -62,6 +62,9 @@ def parse_arguments():
     parser.add_argument('--test_csv', default=os.path.join('dataset', 'test_features.csv'), help='Path to test features CSV file')
     parser.add_argument('--results_dir', default='results', help='Directory to save prediction results locally')
     parser.add_argument('--output_filename', default='submission.csv', help='Filename for the Kaggle submission CSV (will also be logged to MLflow)')
+    parser.add_argument('--model_filename', default='hybrid_hvac_best.pth', help='Filename for the model to load')
+    parser.add_argument('--feature_scaler_filename', default='feature_scaler.save', help='Filename for the feature scaler to load')
+    parser.add_argument('--target_scaler_filename', default='target_scaler.save', help='Filename for the target scaler to load')
 
     # --- Prediction Specific Args (Optional overrides, but typically inferred) ---
     # Sequence length might be needed if test data prep differs significantly, but usually inferred.
@@ -134,13 +137,17 @@ def extract_training_params(train_params):
     except (ValueError, TypeError, SyntaxError) as e:
          raise ValueError(f"Error parsing parameter from training run. Error: {e}")
 
-def download_artifacts(client, training_run_id, tmpdir):
+def download_artifacts(client, training_run_id, tmpdir, args):
     print(f"Downloading artifacts from run {training_run_id} to {tmpdir}")
     try:
         # Correct artifact paths based on how train.py logged them
-        model_artifact_path = "best_model/hybrid_hvac_best.pth" # Use the actual filename logged
-        feature_scaler_artifact_path = "scalers/feature_scaler.save"
-        target_scaler_artifact_path = "scalers/target_scaler.save"
+        # model_artifact_path = "best_model/hybrid_hvac_best.pth" # Use the actual filename logged
+        # feature_scaler_artifact_path = "scalers/feature_scaler.save"
+        # target_scaler_artifact_path = "scalers/target_scaler.save"
+
+        model_artifact_path = args.model_filename
+        feature_scaler_artifact_path = args.feature_scaler_filename
+        target_scaler_artifact_path = args.target_scaler_filename
 
         model_local_path = client.download_artifacts(training_run_id, model_artifact_path, tmpdir)
         feature_scaler_local_path = client.download_artifacts(training_run_id, feature_scaler_artifact_path, tmpdir)
@@ -294,7 +301,7 @@ def main():
 
         # --- Download Artifacts ---
         with tempfile.TemporaryDirectory() as tmpdir:
-            model_local_path, feature_scaler_local_path, target_scaler_local_path = download_artifacts(client, args.training_run_id, tmpdir)
+            model_local_path, feature_scaler_local_path, target_scaler_local_path = download_artifacts(client, args.training_run_id, tmpdir, args)
 
             # --- Load Test Data ---
             X_test_seq, ids = prepare_test_data(args, train_params, feature_scaler_local_path)

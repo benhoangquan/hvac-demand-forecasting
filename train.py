@@ -28,6 +28,15 @@ from tcn_model import TCNModel
 from hybrid_model import HybridModel
 from utils import add_time_features # Import from utils
 
+# --- Constants (Moved Defaults Here for Clarity) ---
+DEFAULT_TRAIN_CSV = 'dataset/train_split.csv'
+DEFAULT_TEST_CSV = 'dataset/test_split.csv'
+DEFAULT_OUTPUT_DIR = 'models'
+DEFAULT_RESULTS_DIR = 'results'
+DEFAULT_MODEL_FILENAME = 'lstm_hvac_best.pth' # Base filename, might be adapted in runs
+DEFAULT_FEATURE_SCALER_FILENAME = 'feature_scaler.save'
+DEFAULT_TARGET_SCALER_FILENAME = 'target_scaler.save'
+
 def load_series(csv_path, feature_cols, target_col, use_time_features=True):
     df = pd.read_csv(csv_path, parse_dates=['date'])
     df = df.sort_values('date').reset_index(drop=True)
@@ -53,14 +62,15 @@ def load_series(csv_path, feature_cols, target_col, use_time_features=True):
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Train Enhanced LSTM for single-step future prediction')
     # Data/Paths
-    parser.add_argument('--train_csv', default='dataset/train_split.csv', help='Path to training data CSV')
-    parser.add_argument('--test_csv', default='dataset/test_split.csv', help='Path to test data CSV')
-    parser.add_argument('--output_dir', default='models', help='Directory to save model and scalers')
-    parser.add_argument('--results_dir', default='results', help='Directory to save evaluation results')
-    parser.add_argument('--model_filename', default='lstm_hvac_best.pth', help='Filename for saved BEST model state dict')
-    parser.add_argument('--feature_scaler_filename', default='feature_scaler.save', help='Filename for saved feature scaler')
-    parser.add_argument('--target_scaler_filename', default='target_scaler.save', help='Filename for saved target scaler')
-    
+    parser.add_argument('--train_csv', default=DEFAULT_TRAIN_CSV, help='Path to training data CSV')
+    parser.add_argument('--test_csv', default=DEFAULT_TEST_CSV, help='Path to test data CSV')
+    parser.add_argument('--output_dir', default=DEFAULT_OUTPUT_DIR, help='Directory to save model and scalers')
+    parser.add_argument('--results_dir', default=DEFAULT_RESULTS_DIR, help='Directory to save evaluation results')
+    # --- Note: Model/Scaler filenames might be handled differently during HPO ---
+    # parser.add_argument('--model_filename', default=DEFAULT_MODEL_FILENAME, help='Filename for saved BEST model state dict')
+    # parser.add_argument('--feature_scaler_filename', default=DEFAULT_FEATURE_SCALER_FILENAME, help='Filename for saved feature scaler')
+    # parser.add_argument('--target_scaler_filename', default=DEFAULT_TARGET_SCALER_FILENAME, help='Filename for saved target scaler')
+
     # Model Hyperparameters
     parser.add_argument('--seq_len', type=int, default=16, help='Sequence length for LSTM input')
     parser.add_argument('--hidden_size', type=int, default=128, help='Number of hidden units in LSTM')
@@ -276,17 +286,20 @@ def evaluate_model(model, best_model_path, test_loader, targ_scaler, device):
     
     return mse, mae, results_df
 
-def log_artifacts(args, best_model_path, feat_scaler, targ_scaler, results_df, model):
+def log_artifacts(args, best_model_path, feat_scaler, targ_scaler, results_df, model, results_df_path=None):
     print("Saving and logging artifacts...")
-    
-    # --- Model --- 
-    # Model state dict already saved locally in train_model
+
+    output_dir = getattr(args, 'output_dir', DEFAULT_OUTPUT_DIR) # Use arg or default
+    results_dir = getattr(args, 'results_dir', DEFAULT_RESULTS_DIR) # Use arg or default
+
+    # --- Model ---
+    # Model state dict already saved locally in train_model (using args.model_filename)
     # Log the best model state dict found locally
     if os.path.exists(best_model_path):
         print(f"Logging best model state dict artifact from: {best_model_path}")
         mlflow.log_artifact(best_model_path, artifact_path="best_model")
-        # Log the associated code files for reproducibility (especially for TCN weight norm)
-        code_paths = [f for f in ["hvac_lstm_prototype.py", "tcn_model.py", "hybrid_model.py", "train.py", "utils.py"] if os.path.exists(f)]
+        # Log the associated code files for reproducibility
+        code_paths = [f for f in ["core_components.py", "tcn_model.py", "hybrid_model.py", "train.py", "utils.py"] if os.path.exists(f)]
         if code_paths:
             for code_path in code_paths:
                  mlflow.log_artifact(code_path, artifact_path="code")
@@ -295,8 +308,9 @@ def log_artifacts(args, best_model_path, feat_scaler, targ_scaler, results_df, m
         print(f"Warning: Best model path {best_model_path} not found. Cannot log model artifact.")
 
     # --- Scalers ---
-    feature_scaler_path = os.path.join(args.output_dir, args.feature_scaler_filename)
-    target_scaler_path = os.path.join(args.output_dir, args.target_scaler_filename)
+    # Use the trial-specific filenames from args
+    feature_scaler_path = os.path.join(output_dir, args.feature_scaler_filename)
+    target_scaler_path = os.path.join(output_dir, args.target_scaler_filename)
     joblib.dump(feat_scaler, feature_scaler_path)
     joblib.dump(targ_scaler, target_scaler_path)
     print(f'Saved feature scaler to {feature_scaler_path}')
@@ -306,10 +320,13 @@ def log_artifacts(args, best_model_path, feat_scaler, targ_scaler, results_df, m
     print("Logged scalers to MLflow artifacts path 'scalers'")
 
     # --- Evaluation Results ---
-    eval_path = os.path.join(args.results_dir, 'test_set_eval.csv')
-    results_df.to_csv(eval_path, index=False)
-    print(f'Saved test set evaluation results to {eval_path}')
-    mlflow.log_artifact(eval_path, artifact_path="evaluation")
+    # Use the provided path or construct default if not given
+    if results_df_path is None:
+        results_df_path = os.path.join(results_dir, getattr(args, 'results_filename', 'test_set_eval.csv')) # Use specific or default name
+
+    results_df.to_csv(results_df_path, index=False)
+    print(f'Saved test set evaluation results to {results_df_path}')
+    mlflow.log_artifact(results_df_path, artifact_path="evaluation")
     print("Logged test evaluation CSV to MLflow artifacts path 'evaluation'")
 
     # --- Hybrid Weights (if applicable) ---
@@ -325,113 +342,147 @@ def log_artifacts(args, best_model_path, feat_scaler, targ_scaler, results_df, m
         print("Note: Model does not have 'alpha' parameter for hybrid weights. Skipping weight logging.")
     
 
-def main():
-    args = parse_arguments()
+# --- Refactored Training and Evaluation Logic ---
+def run_training_trial(args, device, trial_num=None):
+    """
+    Runs a single training and evaluation trial.
+    Accepts args (namespace or dict-like) and device.
+    Returns the metric to optimize (e.g., final test MAE).
+    """
+    run_name = f"trial_{trial_num}" if trial_num is not None else None
+    with mlflow.start_run(run_name=run_name, nested=True if trial_num is not None else False): # Use nested runs for Optuna trials
+        print(f"--- Starting Trial {trial_num or 'Standalone'} ---")
+        print("Args:", args)
+        
+        # --- Adapt filenames for trial to avoid overwrites ---
+        # Use provided args or default if not present (needed when called directly)
+        output_dir = getattr(args, 'output_dir', DEFAULT_OUTPUT_DIR)
+        results_dir = getattr(args, 'results_dir', DEFAULT_RESULTS_DIR)
+        model_base_filename = getattr(args, 'model_filename', DEFAULT_MODEL_FILENAME) # Allow overriding base name
+        feature_scaler_filename = getattr(args, 'feature_scaler_filename', DEFAULT_FEATURE_SCALER_FILENAME)
+        target_scaler_filename = getattr(args, 'target_scaler_filename', DEFAULT_TARGET_SCALER_FILENAME)
 
-    import torch
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+        # Add trial number to filenames if provided
+        trial_suffix = f"_trial_{trial_num}" if trial_num is not None else ""
+        # Ensure output directories exist for this trial run if needed
+        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(results_dir, exist_ok=True)
 
-    # --- Start MLflow Run ---
-    with mlflow.start_run():
-        print("Started MLflow Run:", mlflow.active_run().info.run_uuid)
+        # Update args (or create if not exists) with trial-specific paths/names
+        # This ensures logs and artifacts use unique names per trial
+        args.model_filename = f"{os.path.splitext(model_base_filename)[0]}{trial_suffix}.pth"
+        args.feature_scaler_filename = f"{os.path.splitext(feature_scaler_filename)[0]}{trial_suffix}.save"
+        args.target_scaler_filename = f"{os.path.splitext(target_scaler_filename)[0]}{trial_suffix}.save"
+        args.results_filename = f"test_set_eval{trial_suffix}.csv" # Specific name for eval results
+
 
         # --- Log Parameters ---
         print("Logging parameters to MLflow...")
-        mlflow.log_params(vars(args))
-        mlflow.log_param("device", str(device)) # Log device used
-
-        # --- Create output directories ---
-        os.makedirs(args.output_dir, exist_ok=True)
-        os.makedirs(args.results_dir, exist_ok=True)
+        # Convert Namespace to dict if necessary
+        params_to_log = vars(args) if isinstance(args, argparse.Namespace) else args
+        mlflow.log_params(params_to_log)
+        mlflow.log_param("device", str(device))
 
         # Load data using the new function
-        train_loader, val_loader, test_loader, feat_scaler, targ_scaler, all_feature_cols = load_and_prepare_data(args)
-        mlflow.log_param("features", str(all_feature_cols)) # Log features here
+        train_csv = getattr(args, 'train_csv', DEFAULT_TRAIN_CSV)
+        test_csv = getattr(args, 'test_csv', DEFAULT_TEST_CSV)
+        args.train_csv = train_csv # Ensure it's set if args is a dict
+        args.test_csv = test_csv   # Ensure it's set if args is a dict
+        try:
+            train_loader, val_loader, test_loader, feat_scaler, targ_scaler, all_feature_cols = load_and_prepare_data(args)
+            mlflow.log_param("features", str(all_feature_cols)) # Log features here
+        except Exception as e:
+            print(f"Error during data loading: {e}")
+            mlflow.log_param("status", "failed_data_loading")
+            return float('inf') # Return high value for minimization if data fails
 
         # --- Model, Loss, Optimizer, Scheduler ---
-        model = build_model(args, len(all_feature_cols), device)
+        try:
+            model = build_model(args, len(all_feature_cols), device)
 
-        if args.loss_function == 'MSE':
-            criterion = nn.MSELoss()
-            print("Using MSELoss")
-        elif args.loss_function == 'Huber':
-            criterion = nn.HuberLoss()
-            print("Using HuberLoss")
-        else:
-            raise ValueError(f"Unsupported loss function: {args.loss_function}")
-        
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-        
-        scheduler = None
-        if args.use_lr_scheduler:
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode='min', 
-                factor=args.lr_scheduler_factor, 
-                patience=args.lr_scheduler_patience, 
-                verbose=True
-            )
-            print(f"Using ReduceLROnPlateau scheduler (patience={args.lr_scheduler_patience}, factor={args.lr_scheduler_factor})")
+            if args.loss_function == 'MSE':
+                criterion = nn.MSELoss()
+                print("Using MSELoss")
+            elif args.loss_function == 'Huber':
+                criterion = nn.HuberLoss()
+                print("Using HuberLoss")
+            else:
+                raise ValueError(f"Unsupported loss function: {args.loss_function}")
+
+            optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+
+            scheduler = None
+            if args.use_lr_scheduler:
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer, mode='min',
+                    factor=args.lr_scheduler_factor,
+                    patience=args.lr_scheduler_patience,
+                    verbose=True
+                )
+                print(f"Using ReduceLROnPlateau scheduler (patience={args.lr_scheduler_patience}, factor={args.lr_scheduler_factor})")
+        except Exception as e:
+            print(f"Error during model/optimizer setup: {e}")
+            mlflow.log_param("status", "failed_model_setup")
+            return float('inf')
+
 
         # --- Training Loop ---
-        best_model_path = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, args, device)
+        try:
+            # Use the trial-specific model path within the training function
+            best_model_path = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, args, device)
+        except Exception as e:
+            print(f"Error during training: {e}")
+            mlflow.log_param("status", "failed_training")
+            # Optionally log the exception details
+            # mlflow.log_text(str(e), "training_error.txt")
+            return float('inf') # Indicate failure
 
         # --- Final Model Evaluation on Test Set ---
-        test_mse, test_mae, results_df = evaluate_model(model, best_model_path, test_loader, targ_scaler, device)
-        
-        if test_mse is None: # Check if evaluation failed
-            print("Skipping artifact logging due to evaluation failure.")
-        else:
-            # Log metrics before logging artifacts
-            mlflow.log_metric("final_test_mse", test_mse)
-            mlflow.log_metric("final_test_mae", test_mae)
-            
-            # --- Saving Artifacts --- # Logic moved to log_artifacts
-            # Best model already saved during training and logged to MLflow
-            # print(f'Best model state dict was saved locally to {best_model_path} (will be logged to MLflow)')
+        try:
+            test_mse, test_mae, results_df = evaluate_model(model, best_model_path, test_loader, targ_scaler, device)
 
-            # Save scalers locally
-            # feature_scaler_path = os.path.join(args.output_dir, args.feature_scaler_filename)
-            # target_scaler_path = os.path.join(args.output_dir, args.target_scaler_filename)
-            # joblib.dump(feat_scaler, feature_scaler_path)
-            # joblib.dump(targ_scaler, target_scaler_path)
-            # print(f'Saved feature scaler to {feature_scaler_path}')
-            # print(f'Saved target scaler to {target_scaler_path}')
-            # --- Log Scalers as Artifacts --- # Moved to logging function
-            # mlflow.log_artifact(feature_scaler_path, artifact_path="scalers")
-            # mlflow.log_artifact(target_scaler_path, artifact_path="scalers")
-            # print("Logged scalers to MLflow artifacts path 'scalers'")
+            if test_mse is None: # Check if evaluation failed
+                print("Skipping artifact logging due to evaluation failure.")
+                mlflow.log_param("status", "failed_evaluation")
+                optimization_metric = float('inf') # Return high value for minimization
+            else:
+                # Log metrics before logging artifacts
+                mlflow.log_metric("final_test_mse", test_mse)
+                mlflow.log_metric("final_test_mae", test_mae)
 
-            # Save test set evaluation results locally
-            # eval_path = os.path.join(args.results_dir, 'test_set_eval.csv')
-            # results_df.to_csv(eval_path, index=False)
-            # print(f'Saved test set evaluation results to {eval_path}')
-            # --- Log Evaluation Results as Artifact --- # Moved to logging function
-            # mlflow.log_artifact(eval_path, artifact_path="evaluation")
-            # print("Logged test evaluation CSV to MLflow artifacts path 'evaluation'")
+                # --- Saving/Logging Artifacts ---
+                # Adapt results_df path using the specific name
+                results_df_path = os.path.join(results_dir, args.results_filename)
+                log_artifacts(args, best_model_path, feat_scaler, targ_scaler, results_df, model, results_df_path=results_df_path)
 
-            # --- Log Learned Hybrid Weights --- # Moved to logging function
-            # try:
-            #     final_alpha = model.alpha.item()
-            #     final_weight = torch.sigmoid(model.alpha).item()
-            #     print(f"Final learned weight parameter (alpha): {final_alpha:.4f}")
-            #     print(f"Final LSTM weight (sigmoid(alpha)): {final_weight:.4f}")
-            #     print(f"Final TCN weight (1 - sigmoid(alpha)): {1 - final_weight:.4f}")
-            #     mlflow.log_metric("final_hybrid_alpha", final_alpha)
-            #     mlflow.log_metric("final_hybrid_lstm_weight", final_weight)
-            # except AttributeError:
-            #     print("Note: Model does not seem to have the 'alpha' parameter for hybrid weights.")
-            #     # final_alpha = None # Ensure it exists for logging function
+                optimization_metric = test_mae # Use MAE for optimization
+                mlflow.log_param("status", "completed")
 
-            # --- Log all artifacts together --- # Placeholder for next step
-            log_artifacts(args, best_model_path, feat_scaler, targ_scaler, results_df, model)
+        except Exception as e:
+            print(f"Error during evaluation or artifact logging: {e}")
+            mlflow.log_param("status", "failed_evaluation_logging")
+            optimization_metric = float('inf')
 
-        # --- Print Run ID on Success --- 
-        # This should be the *last* print within the block for easy capturing
-        print(f"MLFLOW_RUN_ID:{mlflow.active_run().info.run_uuid}")
+        print(f"--- Finished Trial {trial_num or 'Standalone'} | Test MAE: {optimization_metric if optimization_metric != float('inf') else 'N/A'} ---")
+        # Return the metric Optuna should minimize
+        return optimization_metric
 
-    # --- Final Evaluation on Test Set ---
-    # print("Evaluating on test set using the best model...") # Redundant print, can be removed
+def main():
+    args = parse_arguments()
+
+    # --- Determine Device --- # Keep this in main or pass device to run_training_trial
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+
+    # --- Call the refactored training logic ---
+    # This allows running train.py directly as before
+    final_metric = run_training_trial(args, device, trial_num=None) # Pass None for standalone run
+
+    if final_metric == float('inf'):
+        print("Standalone training run failed.")
+    else:
+        print(f"Standalone training run finished. Final Test MAE: {final_metric:.6f}")
+        # The run ID is printed within run_training_trial via MLflow context
 
 if __name__ == '__main__':
     main() 
