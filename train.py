@@ -19,24 +19,14 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import joblib
 from tqdm import tqdm
+import mlflow # Added MLflow
+import mlflow.pytorch # Added MLflow PyTorch integration
 
 # Import core components from hvac_lstm_prototype
-from hvac_lstm_prototype import HVACDataset, LSTMModel, create_sequences
+from core_components import HVACDataset, LSTMModel, create_sequences
 from tcn_model import TCNModel
 from hybrid_model import HybridModel
-
-def add_time_features(df):
-    # Ensure 'date' column is datetime type
-    df['date'] = pd.to_datetime(df['date'])
-    df['hour'] = df['date'].dt.hour
-    df['dayofweek'] = df['date'].dt.dayofweek
-    df['month'] = df['date'].dt.month
-    # Optionally add sine/cosine transformations for cyclical features
-    df['hour_sin'] = np.sin(2 * np.pi * df['hour']/24.0)
-    df['hour_cos'] = np.cos(2 * np.pi * df['hour']/24.0)
-    df['month_sin'] = np.sin(2 * np.pi * df['month']/12.0)
-    df['month_cos'] = np.cos(2 * np.pi * df['month']/12.0)
-    return df
+from utils import add_time_features # Import from utils
 
 def load_series(csv_path, feature_cols, target_col, use_time_features=True):
     df = pd.read_csv(csv_path, parse_dates=['date'])
@@ -60,7 +50,7 @@ def load_series(csv_path, feature_cols, target_col, use_time_features=True):
     target = df[target_col].values
     return features, target, df, all_feature_cols # Return updated feature list
 
-def main():
+def parse_arguments():
     parser = argparse.ArgumentParser(description='Train Enhanced LSTM for single-step future prediction')
     # Data/Paths
     parser.add_argument('--train_csv', default='dataset/train_split.csv', help='Path to training data CSV')
@@ -106,25 +96,17 @@ def main():
     parser.add_argument('--use_gradient_clipping', action='store_true', default=True, help='Use gradient clipping during training')
     parser.add_argument('--no_gradient_clipping', action='store_false', dest='use_gradient_clipping', help='Do not use gradient clipping')
     parser.add_argument('--gradient_clip_max_norm', type=float, default=1.0, help='Max norm for gradient clipping')
+    
+    return parser.parse_args()
 
-    args = parser.parse_args()
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-
-    # --- Define feature and target columns ---
+def load_and_prepare_data(args):
+    print("Loading and preparing data...")
     base_feature_cols = [
         'temperature_exterieure', 'humidite', 'ensoleillement',
         'vitesse_vent', 'direction_vent', 'temperature_interieure'
     ]
     target_col = 'puissance_cvac'
 
-    # --- Create output directories ---
-    os.makedirs(args.output_dir, exist_ok=True)
-    os.makedirs(args.results_dir, exist_ok=True)
-
-    # --- Data Loading and Preparation ---
-    print("Loading data...")
     # Load train data and get updated feature list
     feat_train_val, targ_train_val, df_train_val, all_feature_cols = load_series(
         args.train_csv, base_feature_cols, target_col, args.use_time_features
@@ -137,26 +119,22 @@ def main():
     print(f"Using features: {all_feature_cols}")
 
     # --- Scale Features ---
-    print("Scaling features...")
     feat_scaler = MinMaxScaler()
     feat_train_val_s = feat_scaler.fit_transform(feat_train_val)
     feat_test_s = feat_scaler.transform(feat_test)
 
     # --- Scale Targets ---
-    print("Scaling targets...")
     targ_scaler = MinMaxScaler()
     targ_train_val_s = targ_scaler.fit_transform(targ_train_val.reshape(-1,1)).flatten()
     targ_test_s = targ_scaler.transform(targ_test.reshape(-1,1)).flatten()
 
     # --- Create Sequences ---
-    print("Creating sequences...")
     X_train_val, y_train_val = create_sequences((feat_train_val_s, targ_train_val_s), seq_len=args.seq_len)
     X_test, y_test = create_sequences((feat_test_s, targ_test_s), seq_len=args.seq_len)
 
     # --- Split Train/Validation ---
-    print(f"Splitting training data into train/validation ({1-args.val_split_ratio:.0%}/{args.val_split_ratio:.0%})...")
     X_train, X_val, y_train, y_val = train_test_split(
-        X_train_val, y_train_val, test_size=args.val_split_ratio, shuffle=False # Time series data, no shuffle
+        X_train_val, y_train_val, test_size=args.val_split_ratio, shuffle=False
     )
     print(f"Created {len(X_train)} training sequences, {len(X_val)} validation sequences, {len(X_test)} test sequences.")
 
@@ -169,16 +147,18 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=4)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False)
 
-    # --- Model, Loss, Optimizer, Scheduler ---
-    print("Initializing models...")
+    return train_loader, val_loader, test_loader, feat_scaler, targ_scaler, all_feature_cols
+
+def build_model(args, input_size, device):
+    print(f"Initializing Hybrid Model (LSTM + TCN) for {input_size} features...")
     lstm_model_instance = LSTMModel(
-        input_size=len(all_feature_cols),
+        input_size=input_size,
         hidden_size=args.hidden_size,
         num_layers=args.num_layers,
         dropout=args.dropout
     )
     tcn_model_instance = TCNModel(
-        input_size=len(all_feature_cols),
+        input_size=input_size,
         output_size=1, # Ensure TCN also outputs a single value
         num_channels=args.tcn_num_channels,
         kernel_size=args.tcn_kernel_size,
@@ -187,34 +167,16 @@ def main():
     
     model = HybridModel(lstm_model=lstm_model_instance, tcn_model=tcn_model_instance)
     model.to(device)
-    print("Initialized Hybrid Model (LSTM + TCN).")
+    print("Model initialized and moved to device:", device)
+    return model
 
-    if args.loss_function == 'MSE':
-        criterion = nn.MSELoss()
-        print("Using MSELoss")
-    elif args.loss_function == 'Huber':
-        criterion = nn.HuberLoss()
-        print("Using HuberLoss")
-    else:
-        raise ValueError(f"Unsupported loss function: {args.loss_function}")
-        
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    
-    scheduler = None
-    if args.use_lr_scheduler:
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', 
-            factor=args.lr_scheduler_factor, 
-            patience=args.lr_scheduler_patience, 
-            verbose=True
-        )
-        print(f"Using ReduceLROnPlateau scheduler (patience={args.lr_scheduler_patience}, factor={args.lr_scheduler_factor})")
-
-    # --- Training Loop ---
+def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, args, device):
     print("Starting training...")
     best_val_loss = float('inf')
     epochs_no_improve = 0
     best_model_path = os.path.join(args.output_dir, args.model_filename)
+    train_ds_len = len(train_loader.dataset) # Get length for loss calculation
+    val_ds_len = len(val_loader.dataset) # Get length for loss calculation
 
     for epoch in range(1, args.num_epochs + 1):
         # Training Phase
@@ -232,23 +194,19 @@ def main():
             optimizer.step()
             train_loss += loss.item() * Xb.size(0)
             train_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
-        avg_train_loss = train_loss / len(train_ds)
+        avg_train_loss = train_loss / train_ds_len
 
         # Validation Phase
         model.eval()
         val_loss = 0.0
-        val_preds_scaled_list = []
-        val_trues_scaled_list = []
         with torch.no_grad():
             for Xb, yb in val_loader:
                 Xb, yb = Xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
                 out_scaled = model(Xb)
                 loss = criterion(out_scaled, yb)
                 val_loss += loss.item() * Xb.size(0)
-                val_preds_scaled_list.append(out_scaled.cpu().numpy())
-                val_trues_scaled_list.append(yb.cpu().numpy())
         
-        avg_val_loss = val_loss / len(val_ds)
+        avg_val_loss = val_loss / val_ds_len
         print(f'Epoch {epoch}/{args.num_epochs} - Train Loss: {avg_train_loss:.6f} - Val Loss: {avg_val_loss:.6f}')
 
         # LR Scheduling
@@ -268,31 +226,43 @@ def main():
                 print(f'Early stopping triggered after {epoch} epochs.')
                 break
 
-    print("Training finished.")
+        # Log metrics per epoch to MLflow
+        mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
+        mlflow.log_metric("val_loss", avg_val_loss, step=epoch)
+        # Log learning rate if scheduler is used
+        if scheduler:
+            current_lr = optimizer.param_groups[0]['lr']
+            mlflow.log_metric("learning_rate", current_lr, step=epoch)
 
-    # --- Final Model Evaluation on Test Set ---
-    print("Loading best model for final evaluation on test set...")
-    if not os.path.exists(best_model_path):
-         print("Warning: Best model file not found. Evaluating with the last state.")
-         # If no best model was saved (e.g., training stopped early or never improved)
-         # evaluate with the current model state. Consider saving last state as fallback?
-    else:
+    print("Training finished.")
+    return best_model_path
+
+def evaluate_model(model, best_model_path, test_loader, targ_scaler, device):
+    print(f"Loading best model state from {best_model_path} for final evaluation...")
+    try:
         model.load_state_dict(torch.load(best_model_path, map_location=device))
+    except Exception as e:
+        print(f"Error loading model state dict: {e}")
+        print("Evaluation cannot proceed without a valid model state.")
+        return None, None, None # Indicate failure
         
     model.eval()
     test_preds_scaled_list = []
     test_trues_scaled_list = []
+    print("Running final evaluation on test set...")
     with torch.no_grad():
         for Xb, yb in test_loader:
             Xb = Xb.to(device, non_blocking=True)
-            out_scaled = model(Xb).cpu().numpy()
+            # Model expects yb on device for potential internal use even in eval, though we use its numpy version
+            yb_device = yb.to(device, non_blocking=True) 
+            out_scaled = model(Xb).cpu().numpy() # (batch, 1)
             test_preds_scaled_list.append(out_scaled)
-            test_trues_scaled_list.append(yb.numpy())
+            test_trues_scaled_list.append(yb.numpy()) # yb is already (batch, 1)
 
-    preds_scaled = np.concatenate(test_preds_scaled_list)
-    trues_scaled = np.concatenate(test_trues_scaled_list)
+    preds_scaled = np.concatenate(test_preds_scaled_list) # (n_samples, 1)
+    trues_scaled = np.concatenate(test_trues_scaled_list) # (n_samples, 1)
 
-    # Inverse transform
+    # Inverse transform (scalers expect 2D array)
     preds = targ_scaler.inverse_transform(preds_scaled).flatten()
     trues = targ_scaler.inverse_transform(trues_scaled).flatten()
 
@@ -301,37 +271,167 @@ def main():
     mae = mean_absolute_error(trues, preds)
     print(f'Final Test MSE: {mse:.4f}, MAE: {mae:.4f}')
 
-    # --- Saving Artifacts ---
-    # Best model already saved during training
-    print(f'Best model state dict saved to {best_model_path}')
+    # Create results dataframe
+    results_df = pd.DataFrame({'y_true': trues, 'y_pred': preds})
+    
+    return mse, mae, results_df
 
-    # Save scalers (trained on full train+val data)
+def log_artifacts(args, best_model_path, feat_scaler, targ_scaler, results_df, model):
+    print("Saving and logging artifacts...")
+    
+    # --- Model --- 
+    # Model state dict already saved locally in train_model
+    # Log the best model state dict found locally
+    if os.path.exists(best_model_path):
+        print(f"Logging best model state dict artifact from: {best_model_path}")
+        mlflow.log_artifact(best_model_path, artifact_path="best_model")
+        # Log the associated code files for reproducibility (especially for TCN weight norm)
+        code_paths = [f for f in ["hvac_lstm_prototype.py", "tcn_model.py", "hybrid_model.py", "train.py", "utils.py"] if os.path.exists(f)]
+        if code_paths:
+            for code_path in code_paths:
+                 mlflow.log_artifact(code_path, artifact_path="code")
+            print(f"Logged code artifacts: {code_paths}")
+    else:
+        print(f"Warning: Best model path {best_model_path} not found. Cannot log model artifact.")
+
+    # --- Scalers ---
     feature_scaler_path = os.path.join(args.output_dir, args.feature_scaler_filename)
     target_scaler_path = os.path.join(args.output_dir, args.target_scaler_filename)
     joblib.dump(feat_scaler, feature_scaler_path)
     joblib.dump(targ_scaler, target_scaler_path)
     print(f'Saved feature scaler to {feature_scaler_path}')
     print(f'Saved target scaler to {target_scaler_path}')
+    mlflow.log_artifact(feature_scaler_path, artifact_path="scalers")
+    mlflow.log_artifact(target_scaler_path, artifact_path="scalers")
+    print("Logged scalers to MLflow artifacts path 'scalers'")
 
-    # Save test set evaluation results
-    results_df = pd.DataFrame({'y_true': trues, 'y_pred': preds})
+    # --- Evaluation Results ---
     eval_path = os.path.join(args.results_dir, 'test_set_eval.csv')
     results_df.to_csv(eval_path, index=False)
     print(f'Saved test set evaluation results to {eval_path}')
+    mlflow.log_artifact(eval_path, artifact_path="evaluation")
+    print("Logged test evaluation CSV to MLflow artifacts path 'evaluation'")
 
-    # Load best model state
-    print(f"Loading best model from {best_model_path}")
-    model.load_state_dict(torch.load(best_model_path))
+    # --- Hybrid Weights (if applicable) ---
+    try:
+        final_alpha = model.alpha.item()
+        final_weight = torch.sigmoid(model.alpha).item()
+        print(f"Logging final learned weight parameter (alpha): {final_alpha:.4f}")
+        print(f"  Final LSTM weight (sigmoid(alpha)): {final_weight:.4f}")
+        print(f"  Final TCN weight (1 - sigmoid(alpha)): {1 - final_weight:.4f}")
+        mlflow.log_metric("final_hybrid_alpha", final_alpha)
+        mlflow.log_metric("final_hybrid_lstm_weight", final_weight)
+    except AttributeError:
+        print("Note: Model does not have 'alpha' parameter for hybrid weights. Skipping weight logging.")
     
-    # Print the learned weight
-    final_alpha = model.alpha.item()
-    final_weight = torch.sigmoid(model.alpha).item()
-    print(f"Final learned weight parameter (alpha): {final_alpha:.4f}")
-    print(f"Final LSTM weight (sigmoid(alpha)): {final_weight:.4f}")
-    print(f"Final TCN weight (1 - sigmoid(alpha)): {1 - final_weight:.4f}")
+
+def main():
+    args = parse_arguments()
+
+    import torch
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+
+    # --- Start MLflow Run ---
+    with mlflow.start_run():
+        print("Started MLflow Run:", mlflow.active_run().info.run_uuid)
+
+        # --- Log Parameters ---
+        print("Logging parameters to MLflow...")
+        mlflow.log_params(vars(args))
+        mlflow.log_param("device", str(device)) # Log device used
+
+        # --- Create output directories ---
+        os.makedirs(args.output_dir, exist_ok=True)
+        os.makedirs(args.results_dir, exist_ok=True)
+
+        # Load data using the new function
+        train_loader, val_loader, test_loader, feat_scaler, targ_scaler, all_feature_cols = load_and_prepare_data(args)
+        mlflow.log_param("features", str(all_feature_cols)) # Log features here
+
+        # --- Model, Loss, Optimizer, Scheduler ---
+        model = build_model(args, len(all_feature_cols), device)
+
+        if args.loss_function == 'MSE':
+            criterion = nn.MSELoss()
+            print("Using MSELoss")
+        elif args.loss_function == 'Huber':
+            criterion = nn.HuberLoss()
+            print("Using HuberLoss")
+        else:
+            raise ValueError(f"Unsupported loss function: {args.loss_function}")
+        
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        
+        scheduler = None
+        if args.use_lr_scheduler:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min', 
+                factor=args.lr_scheduler_factor, 
+                patience=args.lr_scheduler_patience, 
+                verbose=True
+            )
+            print(f"Using ReduceLROnPlateau scheduler (patience={args.lr_scheduler_patience}, factor={args.lr_scheduler_factor})")
+
+        # --- Training Loop ---
+        best_model_path = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, args, device)
+
+        # --- Final Model Evaluation on Test Set ---
+        test_mse, test_mae, results_df = evaluate_model(model, best_model_path, test_loader, targ_scaler, device)
+        
+        if test_mse is None: # Check if evaluation failed
+            print("Skipping artifact logging due to evaluation failure.")
+        else:
+            # Log metrics before logging artifacts
+            mlflow.log_metric("final_test_mse", test_mse)
+            mlflow.log_metric("final_test_mae", test_mae)
+            
+            # --- Saving Artifacts --- # Logic moved to log_artifacts
+            # Best model already saved during training and logged to MLflow
+            # print(f'Best model state dict was saved locally to {best_model_path} (will be logged to MLflow)')
+
+            # Save scalers locally
+            # feature_scaler_path = os.path.join(args.output_dir, args.feature_scaler_filename)
+            # target_scaler_path = os.path.join(args.output_dir, args.target_scaler_filename)
+            # joblib.dump(feat_scaler, feature_scaler_path)
+            # joblib.dump(targ_scaler, target_scaler_path)
+            # print(f'Saved feature scaler to {feature_scaler_path}')
+            # print(f'Saved target scaler to {target_scaler_path}')
+            # --- Log Scalers as Artifacts --- # Moved to logging function
+            # mlflow.log_artifact(feature_scaler_path, artifact_path="scalers")
+            # mlflow.log_artifact(target_scaler_path, artifact_path="scalers")
+            # print("Logged scalers to MLflow artifacts path 'scalers'")
+
+            # Save test set evaluation results locally
+            # eval_path = os.path.join(args.results_dir, 'test_set_eval.csv')
+            # results_df.to_csv(eval_path, index=False)
+            # print(f'Saved test set evaluation results to {eval_path}')
+            # --- Log Evaluation Results as Artifact --- # Moved to logging function
+            # mlflow.log_artifact(eval_path, artifact_path="evaluation")
+            # print("Logged test evaluation CSV to MLflow artifacts path 'evaluation'")
+
+            # --- Log Learned Hybrid Weights --- # Moved to logging function
+            # try:
+            #     final_alpha = model.alpha.item()
+            #     final_weight = torch.sigmoid(model.alpha).item()
+            #     print(f"Final learned weight parameter (alpha): {final_alpha:.4f}")
+            #     print(f"Final LSTM weight (sigmoid(alpha)): {final_weight:.4f}")
+            #     print(f"Final TCN weight (1 - sigmoid(alpha)): {1 - final_weight:.4f}")
+            #     mlflow.log_metric("final_hybrid_alpha", final_alpha)
+            #     mlflow.log_metric("final_hybrid_lstm_weight", final_weight)
+            # except AttributeError:
+            #     print("Note: Model does not seem to have the 'alpha' parameter for hybrid weights.")
+            #     # final_alpha = None # Ensure it exists for logging function
+
+            # --- Log all artifacts together --- # Placeholder for next step
+            log_artifacts(args, best_model_path, feat_scaler, targ_scaler, results_df, model)
+
+        # --- Print Run ID on Success --- 
+        # This should be the *last* print within the block for easy capturing
+        print(f"MLFLOW_RUN_ID:{mlflow.active_run().info.run_uuid}")
 
     # --- Final Evaluation on Test Set ---
-    print("Evaluating on test set using the best model...")
+    # print("Evaluating on test set using the best model...") # Redundant print, can be removed
 
 if __name__ == '__main__':
     main() 

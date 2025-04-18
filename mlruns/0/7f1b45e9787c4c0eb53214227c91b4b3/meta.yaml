@@ -1,0 +1,15 @@
+artifact_uri: file:///home/ben/Documents/Projects/IFT3395-project/mlruns/0/7f1b45e9787c4c0eb53214227c91b4b3/artifacts
+end_time: 1744953705801
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 7f1b45e9787c4c0eb53214227c91b4b3
+run_name: sassy-deer-598
+run_uuid: 7f1b45e9787c4c0eb53214227c91b4b3
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1744953663870
+status: 3
+tags: []
+user_id: ben

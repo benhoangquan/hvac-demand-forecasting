@@ -1,0 +1,15 @@
+artifact_uri: file:///home/ben/Documents/Projects/IFT3395-project/mlruns/0/d87f4bbf4e01480c98b226297b97013b/artifacts
+end_time: 1744953898806
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: d87f4bbf4e01480c98b226297b97013b
+run_name: prediction
+run_uuid: d87f4bbf4e01480c98b226297b97013b
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1744953897820
+status: 3
+tags: []
+user_id: ben

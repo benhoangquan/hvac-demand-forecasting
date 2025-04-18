@@ -1,0 +1,15 @@
+artifact_uri: file:///home/ben/Documents/Projects/IFT3395-project/mlruns/0/d8dd6671bbdb463d88e5087261726cbd/artifacts
+end_time: 1744952599026
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: d8dd6671bbdb463d88e5087261726cbd
+run_name: amazing-grub-891
+run_uuid: d8dd6671bbdb463d88e5087261726cbd
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1744952596618
+status: 4
+tags: []
+user_id: ben
