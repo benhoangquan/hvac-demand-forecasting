@@ -1,0 +1,7 @@
+[
+    "models/lstm_hvac_best_seed_42.pth",
+    "models/lstm_hvac_best_seed_42_seed_123.pth",
+    "models/lstm_hvac_best_seed_42_seed_123_seed_456.pth",
+    "models/lstm_hvac_best_seed_42_seed_123_seed_456_seed_789.pth",
+    "models/lstm_hvac_best_seed_42_seed_123_seed_456_seed_789_seed_1011.pth"
+]

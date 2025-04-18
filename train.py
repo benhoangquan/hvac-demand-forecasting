@@ -21,6 +21,7 @@ import joblib
 from tqdm import tqdm
 import mlflow # Added MLflow
 import mlflow.pytorch # Added MLflow PyTorch integration
+import random # Add random import for seeding
 
 # Import core components from hvac_lstm_prototype
 from core_components import HVACDataset, LSTMModel, create_sequences
@@ -343,38 +344,66 @@ def log_artifacts(args, best_model_path, feat_scaler, targ_scaler, results_df, m
     
 
 # --- Refactored Training and Evaluation Logic ---
-def run_training_trial(args, device, trial_num=None):
+def run_training_trial(args, device, trial_num=None, random_seed=None):
     """
     Runs a single training and evaluation trial.
     Accepts args (namespace or dict-like) and device.
+    Optionally accepts an Optuna trial number and a random seed.
     Returns the metric to optimize (e.g., final test MAE).
     """
-    run_name = f"trial_{trial_num}" if trial_num is not None else None
-    with mlflow.start_run(run_name=run_name, nested=True if trial_num is not None else False): # Use nested runs for Optuna trials
-        print(f"--- Starting Trial {trial_num or 'Standalone'} ---")
+    
+    # --- Set Seed ---
+    if random_seed is not None:
+        print(f"Setting random seed to: {random_seed}")
+        torch.manual_seed(random_seed)
+        np.random.seed(random_seed)
+        random.seed(random_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(random_seed)
+            # Potentially add deterministic options, but be aware of performance impact
+            # torch.backends.cudnn.deterministic = True
+            # torch.backends.cudnn.benchmark = False
+            
+    # Determine run name based on context (Optuna trial or seeded run)
+    run_name_parts = []
+    if trial_num is not None:
+        run_name_parts.append(f"trial_{trial_num}")
+    if random_seed is not None:
+        run_name_parts.append(f"seed_{random_seed}")
+    run_name = "_".join(run_name_parts) if run_name_parts else None # e.g., "trial_5", "seed_42", "trial_5_seed_42"
+
+    with mlflow.start_run(run_name=run_name, nested=True if (trial_num is not None or random_seed is not None) else False):
+        run_context = "Standalone"
+        if trial_num is not None and random_seed is not None:
+            run_context = f"Trial {trial_num}, Seed {random_seed}"
+        elif trial_num is not None:
+            run_context = f"Trial {trial_num}"
+        elif random_seed is not None:
+            run_context = f"Seed {random_seed}"
+            
+        print(f"--- Starting Run: {run_context} ---")
         print("Args:", args)
         
-        # --- Adapt filenames for trial to avoid overwrites ---
-        # Use provided args or default if not present (needed when called directly)
+        # --- Adapt filenames for trial/seed to avoid overwrites ---
         output_dir = getattr(args, 'output_dir', DEFAULT_OUTPUT_DIR)
         results_dir = getattr(args, 'results_dir', DEFAULT_RESULTS_DIR)
-        model_base_filename = getattr(args, 'model_filename', DEFAULT_MODEL_FILENAME) # Allow overriding base name
+        model_base_filename = getattr(args, 'model_filename', DEFAULT_MODEL_FILENAME)
         feature_scaler_filename = getattr(args, 'feature_scaler_filename', DEFAULT_FEATURE_SCALER_FILENAME)
         target_scaler_filename = getattr(args, 'target_scaler_filename', DEFAULT_TARGET_SCALER_FILENAME)
 
-        # Add trial number to filenames if provided
+        # Add trial number and seed to filenames if provided
         trial_suffix = f"_trial_{trial_num}" if trial_num is not None else ""
-        # Ensure output directories exist for this trial run if needed
+        seed_suffix = f"_seed_{random_seed}" if random_seed is not None else ""
+        combined_suffix = f"{trial_suffix}{seed_suffix}"
+
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(results_dir, exist_ok=True)
 
-        # Update args (or create if not exists) with trial-specific paths/names
-        # This ensures logs and artifacts use unique names per trial
-        args.model_filename = f"{os.path.splitext(model_base_filename)[0]}{trial_suffix}.pth"
-        args.feature_scaler_filename = f"{os.path.splitext(feature_scaler_filename)[0]}{trial_suffix}.save"
-        args.target_scaler_filename = f"{os.path.splitext(target_scaler_filename)[0]}{trial_suffix}.save"
-        args.results_filename = f"test_set_eval{trial_suffix}.csv" # Specific name for eval results
-
+        # Update args (or create if not exists) with trial/seed-specific paths/names
+        args.model_filename = f"{os.path.splitext(model_base_filename)[0]}{combined_suffix}.pth"
+        args.feature_scaler_filename = f"{os.path.splitext(feature_scaler_filename)[0]}{combined_suffix}.save"
+        args.target_scaler_filename = f"{os.path.splitext(target_scaler_filename)[0]}{combined_suffix}.save"
+        args.results_filename = f"test_set_eval{combined_suffix}.csv"
 
         # --- Log Parameters ---
         print("Logging parameters to MLflow...")
@@ -394,7 +423,7 @@ def run_training_trial(args, device, trial_num=None):
         except Exception as e:
             print(f"Error during data loading: {e}")
             mlflow.log_param("status", "failed_data_loading")
-            return float('inf') # Return high value for minimization if data fails
+            return float('inf'), None # Return high value for minimization if data fails
 
         # --- Model, Loss, Optimizer, Scheduler ---
         try:
@@ -423,7 +452,7 @@ def run_training_trial(args, device, trial_num=None):
         except Exception as e:
             print(f"Error during model/optimizer setup: {e}")
             mlflow.log_param("status", "failed_model_setup")
-            return float('inf')
+            return float('inf'), None
 
 
         # --- Training Loop ---
@@ -435,7 +464,7 @@ def run_training_trial(args, device, trial_num=None):
             mlflow.log_param("status", "failed_training")
             # Optionally log the exception details
             # mlflow.log_text(str(e), "training_error.txt")
-            return float('inf') # Indicate failure
+            return float('inf'), None # Indicate failure
 
         # --- Final Model Evaluation on Test Set ---
         try:
@@ -463,26 +492,37 @@ def run_training_trial(args, device, trial_num=None):
             mlflow.log_param("status", "failed_evaluation_logging")
             optimization_metric = float('inf')
 
-        print(f"--- Finished Trial {trial_num or 'Standalone'} | Test MAE: {optimization_metric if optimization_metric != float('inf') else 'N/A'} ---")
-        # Return the metric Optuna should minimize
-        return optimization_metric
+        print(f"--- Finished Run: {run_context} | Test MAE: {optimization_metric if optimization_metric != float('inf') else 'N/A'} ---")
+        # Return the metric Optuna should minimize (or final metric for single runs)
+        # Also return the path to the saved model for ensemble purposes
+        best_model_path = os.path.join(output_dir, args.model_filename) if optimization_metric != float('inf') else None
+        return optimization_metric, best_model_path
 
 def main():
     args = parse_arguments()
 
-    # --- Determine Device --- # Keep this in main or pass device to run_training_trial
+    # --- Determine Device --- 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
     # --- Call the refactored training logic ---
-    # This allows running train.py directly as before
-    final_metric = run_training_trial(args, device, trial_num=None) # Pass None for standalone run
+    # Add a seed argument to the parser for standalone seeded runs
+    parser = argparse.ArgumentParser(add_help=False) # Use add_help=False to avoid conflict
+    parser.add_argument('--seed', type=int, default=None, help='Optional random seed for standalone run')
+    main_args, remaining_argv = parser.parse_known_args()
+    
+    # Reparse with the original parser to get all args
+    args = parse_arguments()
+
+    # Call run_training_trial with the parsed seed
+    final_metric, model_path = run_training_trial(args, device, trial_num=None, random_seed=main_args.seed)
 
     if final_metric == float('inf'):
         print("Standalone training run failed.")
     else:
         print(f"Standalone training run finished. Final Test MAE: {final_metric:.6f}")
-        # The run ID is printed within run_training_trial via MLflow context
+        if model_path:
+             print(f"Model saved to: {model_path}")
 
 if __name__ == '__main__':
     main() 
