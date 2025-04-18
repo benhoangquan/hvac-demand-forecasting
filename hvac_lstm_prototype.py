@@ -23,16 +23,52 @@ class HVACDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 class LSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers=1):
+    def __init__(self, input_size, hidden_size, num_layers=1, dropout=0.0):
         super(LSTMModel, self).__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        # Change output layer to predict a single value
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        
+        # Apply dropout between LSTM layers only if num_layers > 1
+        lstm_dropout = dropout if num_layers > 1 else 0.0
+        
+        self.lstm = nn.LSTM(
+            input_size, 
+            hidden_size, 
+            num_layers, 
+            batch_first=True,
+            dropout=lstm_dropout
+        )
+        
+        # Batch normalization after LSTM output (applied to hidden_size features)
+        self.bn = nn.BatchNorm1d(hidden_size)
+        
+        # Dropout layer before final FC layer
+        self.dropout = nn.Dropout(dropout)
+        
+        # Final fully connected layer
         self.fc = nn.Linear(hidden_size, 1)
+        
     def forward(self, x):
         # x: (batch, seq_len, input_size)
         out, (hn, cn) = self.lstm(x)
-        hn = hn[-1]  # take last layer's hidden state
-        return self.fc(hn)
+        
+        # Use the output of the last time step
+        # out shape: (batch, seq_len, hidden_size)
+        # We want the features from the last time step: (batch, hidden_size)
+        last_time_step_out = out[:, -1, :]
+        
+        # Apply batch normalization
+        # BatchNorm1d expects input of shape (N, C) or (N, C, L)
+        # Here N=batch_size, C=hidden_size
+        bn_out = self.bn(last_time_step_out)
+        
+        # Apply dropout
+        dropout_out = self.dropout(bn_out)
+        
+        # Final prediction
+        final_out = self.fc(dropout_out)
+        
+        return final_out
 
 def create_sequences(data, seq_len=16):
     """

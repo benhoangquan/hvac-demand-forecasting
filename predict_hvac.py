@@ -54,6 +54,32 @@ def main():
     if not os.path.isfile(feature_scaler_path):
         raise FileNotFoundError(f'Feature scaler not found at {feature_scaler_path}. Run train.py first.')
     feat_scaler = joblib.load(feature_scaler_path)
+    
+    # --- Feature Count Check --- #
+    # Check if the number of features in the test data matches what the scaler expects
+    num_features_in_test_csv = features.shape[1]
+    num_features_expected_by_scaler = feat_scaler.n_features_in_
+    
+    if num_features_in_test_csv != num_features_expected_by_scaler:
+        # Handle the mismatch based on whether time features were likely used
+        base_feature_count = 6 # Known base features
+        if num_features_expected_by_scaler > base_feature_count and num_features_in_test_csv == base_feature_count:
+            # This likely means the model was trained WITH time features, but test CSV lacks them
+            raise ValueError(
+                f"Feature mismatch: Scaler expects {num_features_expected_by_scaler} features (likely including time features), "
+                f"but test CSV provides only {num_features_in_test_csv}. "
+                f"Please re-train the model using 'train.py --no_time_features' "
+                f"and use the resulting model/scalers for prediction, or provide a test CSV with appropriate date information."
+            )
+        else:
+            # General mismatch
+            raise ValueError(
+                f"Feature mismatch: Scaler expects {num_features_expected_by_scaler} features, "
+                f"but test CSV provides {num_features_in_test_csv}. Check data loading and feature preparation."
+            )
+            
+    print(f"Feature count ({num_features_in_test_csv}) matches scaler expectation.")
+    # Scale the features from the test CSV
     features_scaled = feat_scaler.transform(features)
 
     # --- Input Sequence Preparation --- #
