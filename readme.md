@@ -53,3 +53,39 @@ To run the prototype:
    ```
 
 The script will train a baseline LSTM model and save the trained model and feature scaler in the `models/` directory.
+  
+## Prediction on Test Set
+  
+Once training is complete, you can generate predictions on the test set:
+
+```bash
+python predict_hvac.py
+```
+
+This will read `dataset/test_features.csv`, use the trained LSTM to predict HVAC consumption for each `ID`,
+and write the results to `results/test1.csv` with columns `ID,prediction`.
+
+## Splitting Dataset 80/20
+
+To create a local train/test split (80% training, 20% test) based on chronological order:
+
+```bash
+python split_dataset.py
+```
+
+This script reads `dataset/train_dataset.csv`, sorts by `date`, and writes:
+- `dataset/train_split.csv` (first 80% of rows)
+- `dataset/test_split.csv` (last 20% of rows)
+
+## Train & Evaluate on the Split
+
+With the splits created, you can train an LSTM on the 80% train set and evaluate on the 20% test set:
+
+```bash
+python evaluate_hvac_split.py --num_epochs 10 --batch_size 64
+```
+
+By default, it uses `dataset/train_split.csv` and `dataset/test_split.csv`, and will:
+- Print epoch‐wise training MSE
+- Print final Test MSE and MAE
+- Save per‐sample predictions vs. ground truth to `results/train_test_eval.csv`
