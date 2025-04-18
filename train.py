@@ -22,6 +22,8 @@ from tqdm import tqdm
 
 # Import core components from hvac_lstm_prototype
 from hvac_lstm_prototype import HVACDataset, LSTMModel, create_sequences
+from tcn_model import TCNModel
+from hybrid_model import HybridModel
 
 def add_time_features(df):
     # Ensure 'date' column is datetime type
@@ -75,6 +77,11 @@ def main():
     parser.add_argument('--num_layers', type=int, default=2, help='Number of LSTM layers')
     parser.add_argument('--dropout', type=float, default=0.2, help='Dropout rate for LSTM and FC layers')
     
+    # TCN Hyperparameters - Added
+    parser.add_argument('--tcn_num_channels', type=int, nargs="+", default=[64, 64], help="Number of channels in each TCN layer (list)")
+    parser.add_argument('--tcn_kernel_size', type=int, default=3, help="Kernel size for TCN convolutions")
+    parser.add_argument('--tcn_dropout', type=float, default=0.2, help="Dropout rate for TCN layers")
+
     # Training Hyperparameters
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training and evaluation')
     parser.add_argument('--num_epochs', type=int, default=50, help='Maximum number of training epochs')
@@ -99,7 +106,7 @@ def main():
     parser.add_argument('--use_gradient_clipping', action='store_true', default=True, help='Use gradient clipping during training')
     parser.add_argument('--no_gradient_clipping', action='store_false', dest='use_gradient_clipping', help='Do not use gradient clipping')
     parser.add_argument('--gradient_clip_max_norm', type=float, default=1.0, help='Max norm for gradient clipping')
-    
+
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -163,14 +170,24 @@ def main():
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False)
 
     # --- Model, Loss, Optimizer, Scheduler ---
-    print("Initializing model...")
-    model = LSTMModel(
-        input_size=len(all_feature_cols), 
-        hidden_size=args.hidden_size, 
+    print("Initializing models...")
+    lstm_model_instance = LSTMModel(
+        input_size=len(all_feature_cols),
+        hidden_size=args.hidden_size,
         num_layers=args.num_layers,
         dropout=args.dropout
     )
+    tcn_model_instance = TCNModel(
+        input_size=len(all_feature_cols),
+        output_size=1, # Ensure TCN also outputs a single value
+        num_channels=args.tcn_num_channels,
+        kernel_size=args.tcn_kernel_size,
+        dropout=args.tcn_dropout
+    )
+    
+    model = HybridModel(lstm_model=lstm_model_instance, tcn_model=tcn_model_instance)
     model.to(device)
+    print("Initialized Hybrid Model (LSTM + TCN).")
 
     if args.loss_function == 'MSE':
         criterion = nn.MSELoss()
@@ -301,6 +318,20 @@ def main():
     eval_path = os.path.join(args.results_dir, 'test_set_eval.csv')
     results_df.to_csv(eval_path, index=False)
     print(f'Saved test set evaluation results to {eval_path}')
+
+    # Load best model state
+    print(f"Loading best model from {best_model_path}")
+    model.load_state_dict(torch.load(best_model_path))
+    
+    # Print the learned weight
+    final_alpha = model.alpha.item()
+    final_weight = torch.sigmoid(model.alpha).item()
+    print(f"Final learned weight parameter (alpha): {final_alpha:.4f}")
+    print(f"Final LSTM weight (sigmoid(alpha)): {final_weight:.4f}")
+    print(f"Final TCN weight (1 - sigmoid(alpha)): {1 - final_weight:.4f}")
+
+    # --- Final Evaluation on Test Set ---
+    print("Evaluating on test set using the best model...")
 
 if __name__ == '__main__':
     main() 
