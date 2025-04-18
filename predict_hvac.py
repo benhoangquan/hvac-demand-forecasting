@@ -25,6 +25,7 @@ def main():
     parser.add_argument('--target_scaler_filename', default='target_scaler.save', help='Filename of the saved target scaler')
     parser.add_argument('--output_filename', default='submission.csv', help='Filename for the Kaggle submission CSV')
     parser.add_argument('--seq_len', type=int, default=16, help='Sequence length used during training')
+    parser.add_argument('--batch_size', type=int, default=1024, help='Batch size for prediction to manage memory usage')
 
     args = parser.parse_args()
 
@@ -132,13 +133,22 @@ def main():
     # Run predictions
     print("Running predictions...")
     preds_scaled_list = []
-    with torch.no_grad():
-        # Process in batches if needed (simple approach for now)
-        X_tensor = torch.from_numpy(X_test_seq).float().to(device)
-        batch_preds_scaled = model(X_tensor).cpu().numpy() # Shape: (num_samples, 1)
-        preds_scaled_list.append(batch_preds_scaled)
+    num_samples = X_test_seq.shape[0]
+    batch_size = args.batch_size
+    num_batches = (num_samples + batch_size - 1) // batch_size # Calculate number of batches needed
 
-    preds_scaled = np.concatenate(preds_scaled_list) # Shape: (num_samples, 1)
+    with torch.no_grad():
+        for i in range(num_batches):
+            start_idx = i * batch_size
+            end_idx = min((i + 1) * batch_size, num_samples)
+            X_batch = X_test_seq[start_idx:end_idx]
+
+            print(f"Processing batch {i+1}/{num_batches} (samples {start_idx}-{end_idx-1})...")
+            X_tensor_batch = torch.from_numpy(X_batch).float().to(device)
+            batch_preds_scaled = model(X_tensor_batch).cpu().numpy() # Shape: (batch_size, 1) or (remaining_samples, 1)
+            preds_scaled_list.append(batch_preds_scaled)
+
+    preds_scaled = np.concatenate(preds_scaled_list, axis=0) # Shape: (num_samples, 1)
 
     # Load target scaler and inverse transform predictions
     print(f"Loading target scaler from {target_scaler_path}...")

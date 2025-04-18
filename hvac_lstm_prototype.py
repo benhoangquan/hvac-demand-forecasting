@@ -36,30 +36,32 @@ class LSTMModel(nn.Module):
             hidden_size, 
             num_layers, 
             batch_first=True,
-            dropout=lstm_dropout
+            dropout=lstm_dropout,
+            bidirectional=True  # Make LSTM bidirectional
         )
         
-        # Batch normalization after LSTM output (applied to hidden_size features)
-        self.bn = nn.BatchNorm1d(hidden_size)
+        # Batch normalization after LSTM output. Input features = hidden_size * 2 for bidirectional
+        self.bn = nn.BatchNorm1d(hidden_size * 2)
         
         # Dropout layer before final FC layer
         self.dropout = nn.Dropout(dropout)
         
-        # Final fully connected layer
-        self.fc = nn.Linear(hidden_size, 1)
+        # Final fully connected layer. Input features = hidden_size * 2 for bidirectional
+        self.fc = nn.Linear(hidden_size * 2, 1)
         
     def forward(self, x):
         # x: (batch, seq_len, input_size)
         out, (hn, cn) = self.lstm(x)
         
         # Use the output of the last time step
-        # out shape: (batch, seq_len, hidden_size)
-        # We want the features from the last time step: (batch, hidden_size)
+        # out shape for bidirectional: (batch, seq_len, hidden_size * 2)
+        # We want the features from the last time step: (batch, hidden_size * 2)
+        # This conveniently concatenates the last forward hidden state and the first backward hidden state
         last_time_step_out = out[:, -1, :]
         
         # Apply batch normalization
         # BatchNorm1d expects input of shape (N, C) or (N, C, L)
-        # Here N=batch_size, C=hidden_size
+        # Here N=batch_size, C=hidden_size * 2
         bn_out = self.bn(last_time_step_out)
         
         # Apply dropout
