@@ -15,7 +15,8 @@ from torch.utils.data import Dataset
 class HVACDataset(Dataset):
     def __init__(self, sequences, targets):
         self.X = sequences.astype(np.float32)
-        self.y = targets.astype(np.float32)
+        # Ensure target is float32 and potentially reshape for loss function compatibility
+        self.y = targets.astype(np.float32).reshape(-1, 1)
     def __len__(self):
         return len(self.y)
     def __getitem__(self, idx):
@@ -25,7 +26,8 @@ class LSTMModel(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers=1):
         super(LSTMModel, self).__init__()
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 16)
+        # Change output layer to predict a single value
+        self.fc = nn.Linear(hidden_size, 1)
     def forward(self, x):
         # x: (batch, seq_len, input_size)
         out, (hn, cn) = self.lstm(x)
@@ -40,13 +42,16 @@ def create_sequences(data, seq_len=16):
           consumption: np.array shape (N,)
     Returns:
       X: np.array shape (num_samples, seq_len, n_features)
-      y: np.array shape (num_samples, 16)
-    Target is a vector of consumption values from time index i+seq_len to i+seq_len+16.
+      y: np.array shape (num_samples, 1) - Target is consumption at step t + seq_len + 15
+    Target is a single consumption value 16 time steps after the *end* of the input sequence.
     """
     features, consumption = data
     X, y = [], []
     N = len(consumption)
+    # Adjust loop range to ensure target index i + seq_len + 15 is valid
     for i in range(N - seq_len - 15):
         X.append(features[i:i+seq_len])
-        y.append(consumption[i+seq_len:i+seq_len+16])
+        # Target is the single value at step i + seq_len + 15
+        y.append(consumption[i+seq_len+15])
+    # Return y as a column vector
     return np.array(X), np.array(y)
