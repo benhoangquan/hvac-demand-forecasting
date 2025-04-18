@@ -20,7 +20,7 @@ def main():
     parser.add_argument('--test_csv', default=os.path.join('dataset', 'test_features.csv'), help='Path to test features CSV file')
     parser.add_argument('--model_dir', default='models', help='Directory containing the saved model and scalers')
     parser.add_argument('--results_dir', default='results', help='Directory to save prediction results')
-    parser.add_argument('--model_filename', default='lstm_hvac.pth', help='Filename of the saved model state dict')
+    parser.add_argument('--model_filename', default='lstm_hvac_best.pth', help='Filename of the saved model state dict')
     parser.add_argument('--feature_scaler_filename', default='feature_scaler.save', help='Filename of the saved feature scaler')
     parser.add_argument('--target_scaler_filename', default='target_scaler.save', help='Filename of the saved target scaler')
     parser.add_argument('--output_filename', default='submission.csv', help='Filename for the Kaggle submission CSV')
