@@ -1,0 +1,1 @@
+python train.py --num_epochs 100 --hidden_size 128 --num_layers 2 --dropout 0.3 --loss_function Huber --lr 0.001 --early_stopping_patience 15 --lr_scheduler_patience 7
