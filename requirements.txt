@@ -5,3 +5,6 @@ torch
 tqdm
 joblib
 matplotlib
+optuna
+ipywidgets
+jupyter
