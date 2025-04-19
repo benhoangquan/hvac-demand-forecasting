@@ -1,6 +1,7 @@
 .idea
 .env
 .venv
+.venv310
 .DS_Store
 __pycache__
 mlruns
