@@ -1,0 +1,8 @@
+{
+    "successful_model_paths": [
+        "/home/ben/Documents/Projects/IFT3395-project/models_lstm/lstm_hvac_best_seed_11.pth",
+        "/home/ben/Documents/Projects/IFT3395-project/models_lstm/lstm_hvac_best_seed_22.pth",
+        "/home/ben/Documents/Projects/IFT3395-project/models_lstm/lstm_hvac_best_seed_33.pth"
+    ],
+    "failed_seeds": []
+}

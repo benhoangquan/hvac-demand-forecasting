@@ -1,0 +1,9 @@
+{
+    "successful_model_paths": [],
+    "successful_run_ids": [],
+    "failed_seeds": [
+        11,
+        22,
+        33
+    ]
+}
