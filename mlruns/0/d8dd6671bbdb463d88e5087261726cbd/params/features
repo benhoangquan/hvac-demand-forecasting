@@ -1,1 +1,0 @@
-['temperature_exterieure', 'humidite', 'ensoleillement', 'vitesse_vent', 'direction_vent', 'temperature_interieure', 'hour_sin', 'hour_cos', 'dayofweek', 'month_sin', 'month_cos']
