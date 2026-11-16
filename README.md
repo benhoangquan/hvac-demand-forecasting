@@ -40,7 +40,7 @@ Held-out split: the last 20% of the year (2022-10-20 to 2022-12-31), 6,977 windo
 | Single LSTM, per seed (5 seeds) | 0.61 to 0.67 | 0.44 to 0.48 |
 | 5-seed LSTM ensemble | 0.59 | 0.43 |
 
-Baselines are computed on the same split from `dataset/test_split.csv`. This is a local held-out score, not the Kaggle leaderboard score.
+Baselines are computed on the same split from `dataset/test_split.csv`. This table is a local held-out score. On the Kaggle competition's hidden test set, the submission scored 0.35333.
 
 ## Quickstart
 
