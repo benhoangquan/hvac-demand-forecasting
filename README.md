@@ -1,6 +1,6 @@
 # HVAC demand forecasting
 
-Forecasts a Montreal house's HVAC power draw 4 hours ahead (16 steps of 15 minutes) from outdoor weather, indoor temperature and recent consumption. Course project for IFT 3395 / 6390 (Université de Montréal), scored on a Kaggle competition.
+Forecasts a Montreal house's HVAC power draw 4 hours ahead (16 steps of 15 minutes) from outdoor weather, indoor temperature and recent consumption. Course project for IFT 3395 / 6390 (Université de Montréal), scored on a Kaggle competition. Team project: Jae (`dotjae`) added the analysis notebooks.
 
 ![Training run and forecast plot](docs/demo.gif)
 
